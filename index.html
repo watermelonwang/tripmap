@@ -141,7 +141,24 @@ button{cursor:pointer}
 .pop .acts{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
 .pop .acts a,.pop .acts button{font-size:13px;padding:5px 10px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--ink);text-decoration:none}
 
-.mapbar{position:absolute;top:12px;left:12px;z-index:800;display:flex;gap:8px;flex-wrap:wrap}
+.mapbar{position:absolute;top:64px;left:12px;z-index:800;display:flex;gap:8px;flex-wrap:wrap}
+.msearch{position:absolute;top:12px;left:12px;z-index:820;width:min(420px,calc(100% - 76px))}
+.msearch .box{display:flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:0 4px 0 12px;box-shadow:0 2px 10px rgba(0,0,0,.15);color:var(--ink-3)}
+.msearch .box:focus-within{border-color:var(--accent)}
+.msearch input{flex:1;min-width:0;border:0;background:none;padding:10px 0;outline:none;color:var(--ink)}
+.msearch input::-webkit-search-cancel-button{display:none}
+#msug{list-style:none;margin:6px 0 0;padding:4px;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);max-height:min(60vh,440px);overflow:auto}
+#msug li.it{display:grid;grid-template-columns:20px 1fr;gap:8px;align-items:start;padding:8px 10px;border-radius:8px;cursor:pointer}
+#msug li.it[aria-selected="true"],#msug li.it:hover{background:var(--panel-2)}
+#msug .ic{width:20px;height:20px;display:grid;place-items:center;color:var(--ink-3);margin-top:1px}
+#msug .ic i{width:11px;height:11px;border-radius:50%;background:var(--c)}
+#msug .t{font-weight:500;display:block}
+#msug .k{font-size:12px;color:var(--accent);margin-left:6px;font-weight:400}
+#msug small{display:block;color:var(--ink-3);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#msug li.grp{font-size:12px;color:var(--ink-3);padding:8px 10px 2px}
+#msug li.info{font-size:13px;color:var(--ink-2);padding:8px 10px}
+.pin.found{left:-11px;top:-11px}
+.pin.found .dot{width:22px;height:22px;background:#e5483a}
 .mapbar button{border:1px solid var(--line);background:var(--panel);border-radius:10px;padding:6px 12px;font-size:13px;box-shadow:0 1px 4px rgba(0,0,0,.12)}
 #pickBanner{position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:850;background:var(--ink);color:var(--panel);padding:9px 10px 9px 16px;border-radius:12px;display:flex;gap:12px;align-items:center;box-shadow:var(--shadow)}
 #pickBanner button{border:0;background:var(--panel);color:var(--ink);border-radius:8px;padding:4px 10px}
@@ -244,6 +261,14 @@ dialog::backdrop{background:rgba(10,20,24,.35)}
 
 <main id="mapWrap">
   <div id="map" aria-label="地圖"></div>
+  <div class="msearch" id="msearch">
+    <div class="box">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+      <input id="mq" type="search" placeholder="搜尋地點、店名或地址" autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="msug">
+      <button class="icon-btn" id="mqClear" hidden aria-label="清除搜尋"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+    <ul id="msug" role="listbox" hidden></ul>
+  </div>
   <div class="mapbar">
     <button id="toggleTags" aria-pressed="true">隱藏描述</button>
     <button id="fitAll">顯示全部地點</button>
@@ -698,6 +723,8 @@ function focusPlace(id){
 /* ---------------- map events ---------------- */
 $('#map').addEventListener('click', e => {
   const b = e.target.closest('[data-edit]'); if (b) openForm(S.places.find(p=>p.id===b.dataset.edit));
+  const a = e.target.closest('[data-add-found]');
+  if (a && found){ const f = found; map.closePopup(); openForm(null, f.ll); if (f.name) $('#fName').value = f.name; }
 });
 $('#toggleTags').addEventListener('click', e => {
   const on = e.currentTarget.getAttribute('aria-pressed') === 'true';
@@ -849,7 +876,7 @@ $('#placeForm').addEventListener('submit', async e => {
   $('#saveDlg').disabled = false;
   if (!ok) return;
   const wasNew = !editing;
-  closeForm();
+  closeForm(); clearFound();
   toast(wasNew ? `已新增「${name}」` : `已更新「${name}」`);
   if (S.activeList!=='all' && S.activeList!==listId) S.activeList = listId;
   S.hiddenCats.delete(data.catId || '_none'); render();
@@ -862,6 +889,166 @@ $('#delPlace').addEventListener('click', async () => {
   const n = editing.name;
   if (await remove('places', editing.id)){ closeForm(); toast(`已刪除「${n}」`); }
 });
+
+
+/* ---------------- 地圖搜尋（邊打字邊列出結果，使用 OpenStreetMap 的 Photon 服務） ---------------- */
+const mq = $('#mq'), msug = $('#msug');
+let sugItems = [], sugIdx = -1, sugTimer = null, sugAbort = null, sugState = { q:'', feats:null, err:false };
+let found = null, foundMarker = null;
+const KIND = {restaurant:'餐廳',cafe:'咖啡廳',fast_food:'速食',food_court:'美食街',bar:'酒吧',pub:'酒吧',izakaya:'居酒屋',
+  hotel:'飯店',hostel:'青年旅館',guest_house:'民宿',motel:'旅館',apartment:'公寓',
+  station:'車站',halt:'車站',subway_entrance:'地鐵出入口',bus_station:'巴士站',aerodrome:'機場',ferry_terminal:'碼頭',
+  supermarket:'超市',convenience:'便利商店',mall:'購物中心',department_store:'百貨公司',toys:'玩具店',games:'遊戲店',
+  anime:'動漫店',video_games:'電玩店',books:'書店',electronics:'電器行',clothes:'服飾店',pharmacy:'藥局',chemist:'藥妝店',
+  cosmetics:'美妝店',bakery:'麵包店',confectionery:'甜點店',variety_store:'雜貨店',gift:'禮品店',
+  attraction:'景點',museum:'博物館',gallery:'美術館',viewpoint:'展望點',theme_park:'主題樂園',zoo:'動物園',aquarium:'水族館',
+  park:'公園',garden:'庭園',temple:'寺廟',shrine:'神社',place_of_worship:'宗教場所',castle:'城堡',
+  city:'城市',town:'城鎮',village:'村落',suburb:'地區',quarter:'地區',neighbourhood:'街區',island:'島嶼',
+  state:'省/縣',province:'省',country:'國家',residential:'道路',primary:'道路',secondary:'道路',tertiary:'道路'};
+const isArea = p => p.osm_key === 'place' || p.osm_key === 'boundary' || p.type === 'city' || p.type === 'state' || p.type === 'country' || p.type === 'district';
+const uniq = a => a.filter((v,i) => v && a.indexOf(v) === i);
+function photonAddr(p){
+  return uniq([[p.street, p.housenumber].filter(Boolean).join(' '), p.district || p.locality, p.city, p.county, p.state, p.country])
+    .filter(v => v !== p.name).join(', ');
+}
+async function photon(q){
+  if (sugAbort) sugAbort.abort();
+  sugAbort = new AbortController();
+  const c = map.getCenter();
+  const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=8&lat=${c.lat.toFixed(4)}&lon=${c.lng.toFixed(4)}&zoom=${Math.round(map.getZoom())}&location_bias_scale=0.4`;
+  const r = await fetch(url, { signal: sugAbort.signal });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return (await r.json()).features || [];
+}
+
+function buildItems(q){
+  const items = [];
+  const ql = q.toLowerCase();
+  const ll = parseLoc(q);
+  if (ll) items.push({ kind:'coord', ll, name:'', addr:`${ll.lat.toFixed(5)}, ${ll.lng.toFixed(5)}` });
+  const mine = S.places.filter(p => [p.name, p.label, p.note].some(v => String(v||'').toLowerCase().includes(ql))).slice(0, 5);
+  if (mine.length){ items.push({ kind:'head', text:'已存的地點' }); mine.forEach(p => items.push({ kind:'saved', p })); }
+  if (!ll){
+    items.push({ kind:'head', text:'搜尋結果' });
+    if (sugState.err) items.push({ kind:'info', text:'搜尋服務暫時無法使用，請稍後再試' });
+    else if (sugState.feats === null) items.push({ kind:'info', text: q.length < 2 ? '再多打幾個字…' : '搜尋中…' });
+    else if (!sugState.feats.length) items.push({ kind:'info', text:'找不到符合的地方，試著加上城市名稱' });
+    else sugState.feats.forEach(f => {
+      const pr = f.properties || {};
+      items.push({ kind:'osm', f, name: pr.name || [pr.street, pr.housenumber].filter(Boolean).join(' ') || pr.city || q,
+        addr: photonAddr(pr), tag: KIND[pr.osm_value] || '' });
+    });
+  }
+  return items;
+}
+const selectable = it => it.kind === 'saved' || it.kind === 'osm' || it.kind === 'coord';
+
+function renderSug(){
+  const q = mq.value.trim();
+  if (!q){ closeSug(); return; }
+  sugItems = buildItems(q);
+  const pinSvg = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg>';
+  msug.innerHTML = sugItems.map((it, i) => {
+    if (it.kind === 'head') return `<li class="grp" role="presentation">${esc(it.text)}</li>`;
+    if (it.kind === 'info') return `<li class="info" role="presentation">${esc(it.text)}</li>`;
+    const sel = i === sugIdx;
+    if (it.kind === 'saved'){
+      const p = it.p, lst = listOf(p);
+      return `<li class="it" role="option" data-i="${i}" aria-selected="${sel}"><span class="ic"><i style="--c:${esc(colorOf(p))}"></i></span>
+        <span><span class="t">${esc(p.name)}${labelOf(p)?`<span class="k">${esc(labelOf(p))}</span>`:''}</span><small>${esc(lst ? lst.name : '')}</small></span></li>`;
+    }
+    if (it.kind === 'coord') return `<li class="it" role="option" data-i="${i}" aria-selected="${sel}"><span class="ic">${pinSvg}</span><span><span class="t">前往這個座標</span><small>${esc(it.addr)}</small></span></li>`;
+    return `<li class="it" role="option" data-i="${i}" aria-selected="${sel}"><span class="ic">${pinSvg}</span>
+      <span><span class="t">${esc(it.name)}${it.tag?`<span class="k">${esc(it.tag)}</span>`:''}</span><small>${esc(it.addr)}</small></span></li>`;
+  }).join('');
+  msug.hidden = false; mq.setAttribute('aria-expanded', 'true');
+}
+function closeSug(){ msug.hidden = true; mq.setAttribute('aria-expanded', 'false'); sugIdx = -1; }
+
+function chooseItem(it){
+  if (!it) return;
+  closeSug(); mq.blur();
+  if (it.kind === 'saved'){ clearFound(); focusPlace(it.p.id); return; }
+  let ll, name = '', addr = '', tag = '';
+  if (it.kind === 'coord'){ ll = it.ll; addr = it.addr; }
+  else {
+    const pr = it.f.properties || {}, [lng, lat] = it.f.geometry.coordinates;
+    ll = L.latLng(lat, lng); name = it.name; addr = it.addr; tag = it.tag;
+    const ex = pr.extent;
+    if (ex && isArea(pr)) map.fitBounds([[ex[3], ex[0]], [ex[1], ex[2]]], { maxZoom: 15 });
+    else map.setView(ll, Math.max(map.getZoom(), 17));
+  }
+  if (it.kind === 'coord') map.setView(ll, Math.max(map.getZoom(), 17));
+  showFound({ ll, name, addr, tag });
+}
+function showFound(f){
+  clearFound();
+  found = f;
+  foundMarker = L.marker(f.ll, { zIndexOffset: 900, icon: L.divIcon({ html:'<div class="pin found"><span class="dot"></span></div>', className:'', iconSize:[0,0] }) }).addTo(map);
+  const gq = f.name ? encodeURIComponent(f.name + (f.addr ? ' ' + f.addr : '')) : `${f.ll.lat},${f.ll.lng}`;
+  foundMarker.bindPopup(`<div class="pop">${f.tag?`<span class="tag" style="--c:#e5483a">${esc(f.tag)}</span>`:''}
+    <h3>${esc(f.name || '搜尋的位置')}</h3><p class="meta">${esc(f.addr)}</p>
+    <div class="acts">${S.user ? '<button data-add-found>加入地圖</button>' : ''}
+    <a href="https://www.google.com/maps/search/?api=1&query=${gq}" target="_blank" rel="noopener">在 Google 地圖開啟</a></div></div>`,
+    { maxWidth: 280, offset: [0, -8] });
+  map.once('moveend', () => foundMarker && foundMarker.openPopup());
+  setTimeout(() => { if (foundMarker && !foundMarker.isPopupOpen()) foundMarker.openPopup(); }, 700);
+}
+function clearFound(){ if (foundMarker){ map.removeLayer(foundMarker); foundMarker = null; } found = null; }
+
+mq.addEventListener('input', () => {
+  const q = mq.value.trim();
+  $('#mqClear').hidden = !mq.value;
+  sugIdx = -1; clearTimeout(sugTimer);
+  sugState = { q, feats: null, err: false };
+  if (!q){ closeSug(); return; }
+  renderSug();
+  if (q.length < 2 || parseLoc(q)) return;
+  sugTimer = setTimeout(async () => {
+    try {
+      const feats = await photon(q);
+      if (mq.value.trim() !== q) return;
+      sugState = { q, feats, err: false }; renderSug();
+    } catch(e){
+      if (e.name === 'AbortError') return;
+      console.error(e); sugState = { q, feats: [], err: true }; renderSug();
+    }
+  }, 300);
+});
+mq.addEventListener('focus', () => { if (mq.value.trim()) renderSug(); });
+mq.addEventListener('keydown', async e => {
+  const sels = sugItems.map((it, i) => selectable(it) ? i : -1).filter(i => i >= 0);
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp'){
+    e.preventDefault(); if (!sels.length) return;
+    const pos = sels.indexOf(sugIdx);
+    sugIdx = e.key === 'ArrowDown' ? sels[(pos + 1) % sels.length] : sels[(pos - 1 + sels.length) % sels.length];
+    renderSug();
+    msug.querySelector('[aria-selected="true"]')?.scrollIntoView({ block:'nearest' });
+  } else if (e.key === 'Enter'){
+    e.preventDefault();
+    const q = mq.value.trim(); if (!q) return;
+    if (sugIdx >= 0) return chooseItem(sugItems[sugIdx]);
+    if (sugState.q === q && sugState.feats !== null && !parseLoc(q)){
+      const first = sugItems.find(it => it.kind === 'osm') || sugItems.find(selectable);
+      return first ? chooseItem(first) : renderSug();
+    }
+    if (parseLoc(q)) return chooseItem(sugItems.find(it => it.kind === 'coord'));
+    clearTimeout(sugTimer);
+    try {
+      const feats = await photon(q);
+      sugState = { q, feats, err: false };
+      sugItems = buildItems(q);
+      const first = sugItems.find(it => it.kind === 'osm');
+      first ? chooseItem(first) : renderSug();
+    } catch(err){ if (err.name !== 'AbortError'){ sugState = { q, feats: [], err: true }; renderSug(); } }
+  } else if (e.key === 'Escape'){ closeSug(); }
+});
+msug.addEventListener('mousedown', e => e.preventDefault());
+msug.addEventListener('click', e => { const li = e.target.closest('[data-i]'); if (li) chooseItem(sugItems[+li.dataset.i]); });
+document.addEventListener('click', e => { if (!e.target.closest('#msearch')) closeSug(); });
+$('#mqClear').addEventListener('click', () => { mq.value = ''; $('#mqClear').hidden = true; closeSug(); clearFound(); mq.focus(); });
+L.DomEvent.disableClickPropagation($('#msearch'));
+L.DomEvent.disableScrollPropagation($('#msearch'));
 
 render();
 </script>
