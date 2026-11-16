@@ -1,0 +1,42 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ▼ 改成擁有者的 Google 帳號（全部小寫，要和 index.html 的 OWNER_EMAIL 一樣）
+    function ownerEmail() { return 'you@gmail.com'; }
+
+    function signedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+    function isOwner() {
+      return signedIn() && request.auth.token.email.lower() == ownerEmail();
+    }
+    function isMember() {
+      return isOwner() || (
+        signedIn()
+        && exists(/databases/$(database)/documents/config/members)
+        && request.auth.token.email.lower() in
+           get(/databases/$(database)/documents/config/members).data.emails
+      );
+    }
+
+    // 成員名單：成員可讀，只有擁有者能改
+    match /config/members {
+      allow read: if isMember();
+      allow write: if isOwner();
+    }
+
+    match /meta/{id}  { allow read, write: if isMember(); }
+    match /lists/{id} { allow read, write: if isMember(); }
+    match /cats/{id}  { allow read, write: if isMember(); }
+
+    match /places/{id} {
+      allow read, delete: if isMember();
+      allow create, update: if isMember()
+        && request.resource.data.name is string
+        && request.resource.data.name.size() <= 60
+        && request.resource.data.lat is number
+        && request.resource.data.lng is number;
+    }
+  }
+}
