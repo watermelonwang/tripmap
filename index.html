@@ -172,6 +172,15 @@ body.collapsed #panel{border-right:0;visibility:hidden}
 #msug small{display:block;color:var(--ink-3);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #msug li.grp{font-size:12px;color:var(--ink-3);padding:8px 10px 2px}
 #msug li.info{font-size:13px;color:var(--ink-2);padding:8px 10px}
+.me-dot{position:absolute;left:-9px;top:-9px;width:18px;height:18px;border-radius:50%;background:#1a73e8;border:3px solid #fff;box-shadow:0 0 0 0 rgba(26,115,232,.5),0 1px 4px rgba(0,0,0,.35);animation:mepulse 2s ease-out infinite}
+@keyframes mepulse{0%{box-shadow:0 0 0 0 rgba(26,115,232,.45),0 1px 4px rgba(0,0,0,.35)}100%{box-shadow:0 0 0 16px rgba(26,115,232,0),0 1px 4px rgba(0,0,0,.35)}}
+@media (prefers-reduced-motion:reduce){.me-dot{animation:none}}
+.locate-btn a{display:grid!important;place-items:center;cursor:pointer}
+.locate-btn a.on{color:#1a73e8!important}
+.locate-btn a.busy svg{animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.dist{color:var(--accent)}
+.pop .acts a.nav{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
 .pin.found{left:-11px;top:-11px}
 .pin.found .dot{width:22px;height:22px;background:#e5483a}
 .mapbar button{border:1px solid var(--line);background:var(--panel);border-radius:10px;padding:6px 12px;font-size:13px;box-shadow:0 1px 4px rgba(0,0,0,.12)}
@@ -382,6 +391,59 @@ function ungate(){ $('#gate').hidden = true; }
 const map = L.map('map', { zoomControl:false, worldCopyJump:true, minZoom:2, maxZoom:19 }).setView([28, 125], 4);
 L.control.zoom({ position:'topright' }).addTo(map);
 L.control.scale({ position:'bottomleft', imperial:false }).addTo(map);
+
+/* ---------------- 我的位置 ---------------- */
+let me = null, meMarker = null, meCircle = null, meWatch = null, meFirst = false, meLastRender = null;
+const LocateCtl = L.Control.extend({
+  options: { position:'topright' },
+  onAdd(){
+    const box = L.DomUtil.create('div', 'leaflet-bar leaflet-control locate-btn');
+    const a = L.DomUtil.create('a', '', box);
+    a.href = '#'; a.title = '顯示我的位置'; a.setAttribute('role','button'); a.setAttribute('aria-label','顯示我的位置');
+    a.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><circle cx="12" cy="12" r="8"/></svg>';
+    L.DomEvent.disableClickPropagation(box);
+    L.DomEvent.on(a, 'click', e => { L.DomEvent.preventDefault(e); locateClick(a); });
+    this._a = a; return box;
+  }
+});
+const locateCtl = new LocateCtl().addTo(map);
+function locateClick(a){
+  if (!('geolocation' in navigator)){ toast('這個瀏覽器不支援定位'); return; }
+  if (meWatch !== null){
+    if (me && map.latLngToContainerPoint(me).distanceTo(map.getSize().divideBy(2)) < 30){ stopLocate(); return; }
+    if (me) map.flyTo(me, Math.max(map.getZoom(), 16), { duration:0.6 });
+    return;
+  }
+  a.classList.add('busy'); meFirst = true;
+  meWatch = navigator.geolocation.watchPosition(pos => {
+    a.classList.remove('busy'); a.classList.add('on'); a.title = '回到我的位置（再按一次關閉定位）';
+    me = L.latLng(pos.coords.latitude, pos.coords.longitude);
+    const acc = Math.min(pos.coords.accuracy || 0, 3000);
+    if (!meMarker){
+      meCircle = L.circle(me, { radius:acc, color:'#1a73e8', weight:1, fillColor:'#1a73e8', fillOpacity:.12, interactive:false }).addTo(map);
+      meMarker = L.marker(me, { zIndexOffset:2000, interactive:false, keyboard:false, icon:L.divIcon({ html:'<div class="me-dot"></div>', className:'', iconSize:[0,0] }) }).addTo(map);
+    } else { meMarker.setLatLng(me); meCircle.setLatLng(me).setRadius(acc); }
+    if (meFirst){ meFirst = false; map.flyTo(me, Math.max(map.getZoom(), 16), { duration:0.8 }); }
+    if (!meLastRender || meLastRender.distanceTo(me) > 30){ meLastRender = me; renderPlaceList(); }
+  }, err => {
+    a.classList.remove('busy');
+    toast(err.code === 1 ? '沒有定位權限：請在瀏覽器的網站設定允許「位置」後再試' : err.code === 3 ? '定位逾時，請到戶外或稍後再試' : '目前無法取得位置');
+    stopLocate();
+  }, { enableHighAccuracy:true, maximumAge:10000, timeout:20000 });
+}
+function stopLocate(){
+  if (meWatch !== null) navigator.geolocation.clearWatch(meWatch);
+  meWatch = null; me = null; meLastRender = null;
+  if (meMarker){ map.removeLayer(meMarker); map.removeLayer(meCircle); meMarker = meCircle = null; }
+  const a = locateCtl._a; a.classList.remove('on','busy'); a.title = '顯示我的位置';
+  renderPlaceList();
+}
+function distText(lat, lng){
+  if (!me) return '';
+  const d = me.distanceTo([lat, lng]);
+  return d < 1000 ? `${Math.round(d / 10) * 10} 公尺` : `${(d / 1000).toFixed(d < 10000 ? 1 : 0)} 公里`;
+}
+const navUrl = (lat, lng) => `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 19,
   attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> 貢獻者'
@@ -580,7 +642,7 @@ function renderPlaceList(){
     const lst = listOf(p);
     return `<li><button class="place" data-place="${esc(p.id)}" style="--c:${esc(colorOf(p))}">
       <span class="sw"></span>
-      <span><span class="nm">${esc(p.name)}</span><span class="sub">${esc(lst?lst.name:'')}${p.byName?' ／ '+esc(p.byName)+' 新增':''}</span></span>
+      <span><span class="nm">${esc(p.name)}</span><span class="sub">${me?`<span class="dist">${distText(p.lat,p.lng)}</span> ／ `:''}${esc(lst?lst.name:'')}${p.byName?' ／ '+esc(p.byName)+' 新增':''}</span></span>
       ${labelOf(p)?`<span class="lbl">${esc(labelOf(p))}</span>`:''}
     </button></li>`;
   }).join('');
@@ -629,9 +691,11 @@ function popupHtml(id){
     <h3>${esc(p.name)}</h3>
     <p class="meta">${esc(cat?cat.name:'未分類')}，在「${esc(lst?lst.name:'—')}」清單</p>
     ${p.byName?`<p class="meta">${esc(p.byName)} 新增</p>`:''}
+    ${me?`<p class="meta dist">距離你 ${distText(p.lat,p.lng)}（直線）</p>`:''}
     ${p.note?`<p class="note">${esc(p.note)}</p>`:''}
     <div class="acts">
       <button data-edit="${esc(p.id)}">編輯</button>
+      <a class="nav" href="${navUrl(p.lat,p.lng)}" target="_blank" rel="noopener">導航</a>
       <a href="${g}" target="_blank" rel="noopener">在 Google 地圖開啟</a>
     </div></div>`;
 }
@@ -1007,6 +1071,7 @@ function showFound(f){
   foundMarker.bindPopup(`<div class="pop">${f.tag?`<span class="tag" style="--c:#e5483a">${esc(f.tag)}</span>`:''}
     <h3>${esc(f.name || '搜尋的位置')}</h3><p class="meta">${esc(f.addr)}</p>
     <div class="acts">${S.user ? '<button data-add-found>加入地圖</button>' : ''}
+    <a class="nav" href="${navUrl(f.ll.lat,f.ll.lng)}" target="_blank" rel="noopener">導航</a>
     <a href="https://www.google.com/maps/search/?api=1&query=${gq}" target="_blank" rel="noopener">在 Google 地圖開啟</a></div></div>`,
     { maxWidth: 280, offset: [0, -8] });
   map.once('moveend', () => foundMarker && foundMarker.openPopup());
